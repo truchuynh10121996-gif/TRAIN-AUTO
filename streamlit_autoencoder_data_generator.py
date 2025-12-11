@@ -671,15 +671,27 @@ def compute_features(df: pd.DataFrame, progress_callback=None) -> pd.DataFrame:
     df['timestamp_unix'] = df['timestamp'].astype(np.int64) // 10**9
 
     # 12. tx_count_1h (số giao dịch trong 1 giờ qua)
-    # Tính bằng rolling count trên timestamp window
-    df['tx_count_1h'] = df.groupby('user_id').apply(
-        lambda x: x.set_index('timestamp').rolling('1H').count()['amount'].shift(1)
-    ).reset_index(level=0, drop=True).fillna(0).astype(int)
+    # Tính bằng cách đếm số giao dịch trong 1 giờ trước đó
+    def calc_rolling_count(group, hours):
+        """Tính số giao dịch trong N giờ trước (không tính giao dịch hiện tại)"""
+        group = group.sort_values('timestamp')
+        timestamps = group['timestamp'].values
+        counts = []
+        for i, ts in enumerate(timestamps):
+            # Đếm số giao dịch trong khoảng [ts - N hours, ts) - không tính giao dịch hiện tại
+            cutoff = ts - np.timedelta64(hours, 'h')
+            count = np.sum((timestamps[:i] >= cutoff) & (timestamps[:i] < ts))
+            counts.append(count)
+        return pd.Series(counts, index=group.index)
+
+    df['tx_count_1h'] = df.groupby('user_id', group_keys=False).apply(
+        lambda x: calc_rolling_count(x, 1)
+    ).fillna(0).astype(int)
 
     # 13. tx_count_24h
-    df['tx_count_24h'] = df.groupby('user_id').apply(
-        lambda x: x.set_index('timestamp').rolling('24H').count()['amount'].shift(1)
-    ).reset_index(level=0, drop=True).fillna(0).astype(int)
+    df['tx_count_24h'] = df.groupby('user_id', group_keys=False).apply(
+        lambda x: calc_rolling_count(x, 24)
+    ).fillna(0).astype(int)
 
     # 14. minutes_since_last_tx
     df['prev_timestamp'] = df.groupby('user_id')['timestamp'].shift(1)
@@ -715,9 +727,9 @@ def compute_features(df: pd.DataFrame, progress_callback=None) -> pd.DataFrame:
     df['is_same_bank'] = (df['user_bank'] == df['recipient_bank']).astype(int)
 
     # 20. tx_count_to_same_recipient_24h
-    df['tx_count_to_same_recipient_24h'] = df.groupby('user_recipient_key').apply(
-        lambda x: x.set_index('timestamp').rolling('24H').count()['amount'].shift(1)
-    ).reset_index(level=0, drop=True).fillna(0).astype(int)
+    df['tx_count_to_same_recipient_24h'] = df.groupby('user_recipient_key', group_keys=False).apply(
+        lambda x: calc_rolling_count(x, 24)
+    ).fillna(0).astype(int)
 
     # 21. recipient_account_age_days
     df['recipient_account_age_days'] = (
@@ -757,11 +769,9 @@ def compute_features(df: pd.DataFrame, progress_callback=None) -> pd.DataFrame:
     update_progress("Tính Scam-specific features...")
 
     # 28. is_incremental_amount (số tiền tăng so với lần trước cùng recipient)
-    df['is_incremental_amount'] = (
-        df.groupby('user_recipient_key')['amount'].apply(
-            lambda x: (x > x.shift(1)).astype(int)
-        )
-    ).reset_index(level=0, drop=True).fillna(0).astype(int)
+    df['prev_amount_to_recipient'] = df.groupby('user_recipient_key')['amount'].shift(1)
+    df['is_incremental_amount'] = (df['amount'] > df['prev_amount_to_recipient']).fillna(False).astype(int)
+    df = df.drop(columns=['prev_amount_to_recipient'], errors='ignore')
 
     # 29. is_during_business_hours (8h-17h, thứ 2-6)
     df['is_during_business_hours'] = (
@@ -770,9 +780,22 @@ def compute_features(df: pd.DataFrame, progress_callback=None) -> pd.DataFrame:
 
     # 30. recipient_total_received_24h (chỉ tính từ giao dịch TRƯỚC)
     # Đây là tổng tiền recipient nhận được trong 24h từ TẤT CẢ các nguồn
-    df['recipient_total_received_24h'] = df.groupby('recipient_id').apply(
-        lambda x: x.set_index('timestamp')['amount'].rolling('24H').sum().shift(1)
-    ).reset_index(level=0, drop=True).fillna(0)
+    def calc_rolling_sum(group, hours):
+        """Tính tổng amount trong N giờ trước (không tính giao dịch hiện tại)"""
+        group = group.sort_values('timestamp')
+        timestamps = group['timestamp'].values
+        amounts = group['amount'].values
+        sums = []
+        for i, ts in enumerate(timestamps):
+            cutoff = ts - np.timedelta64(hours, 'h')
+            mask = (timestamps[:i] >= cutoff) & (timestamps[:i] < ts)
+            total = np.sum(amounts[:i][mask])
+            sums.append(total)
+        return pd.Series(sums, index=group.index)
+
+    df['recipient_total_received_24h'] = df.groupby('recipient_id', group_keys=False).apply(
+        lambda x: calc_rolling_sum(x, 24)
+    ).fillna(0)
 
     update_progress("Chuẩn hóa features...")
 
