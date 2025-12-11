@@ -14,10 +14,8 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import io
-import json
 import hashlib
 from sklearn.preprocessing import StandardScaler
-import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -889,174 +887,6 @@ def fit_and_transform_scaler(train_df: pd.DataFrame,
 
 
 # ============================================================================
-# EXPORT FUNCTIONS
-# ============================================================================
-
-def create_data_dictionary() -> pd.DataFrame:
-    """Tạo data dictionary cho 30 features"""
-    dictionary = [
-        # Amount (5)
-        {'feature_name': 'amount_log', 'data_type': 'float',
-         'description': 'Log của số tiền giao dịch', 'calculation': 'log(amount + 1)',
-         'range': '[0, 20]', 'notes': 'Log base e'},
-        {'feature_name': 'amount_to_balance_ratio', 'data_type': 'float',
-         'description': 'Tỷ lệ giao dịch/số dư hiện tại', 'calculation': 'amount / balance_before',
-         'range': '[0, 1+]', 'notes': 'Có thể > 1 nếu overdraft'},
-        {'feature_name': 'z_score_amount', 'data_type': 'float',
-         'description': 'Z-score của amount so với 30 ngày', 'calculation': '(amount - mean_30d) / std_30d',
-         'range': '[-5, 10+]', 'notes': 'Clipped, dùng shift(1)'},
-        {'feature_name': 'is_round_amount', 'data_type': 'int',
-         'description': 'Số tiền chia hết 50,000', 'calculation': 'amount % 50000 == 0',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'amount_std_7d', 'data_type': 'float',
-         'description': 'Độ lệch chuẩn số tiền 7 ngày', 'calculation': 'rolling std 7 ngày',
-         'range': '[0, inf]', 'notes': 'Dùng shift(1)'},
-
-        # Temporal (6)
-        {'feature_name': 'hour_sin', 'data_type': 'float',
-         'description': 'Sine của giờ', 'calculation': 'sin(2π × hour/24)',
-         'range': '[-1, 1]', 'notes': 'Cyclic encoding'},
-        {'feature_name': 'hour_cos', 'data_type': 'float',
-         'description': 'Cosine của giờ', 'calculation': 'cos(2π × hour/24)',
-         'range': '[-1, 1]', 'notes': 'Cyclic encoding'},
-        {'feature_name': 'day_of_week_sin', 'data_type': 'float',
-         'description': 'Sine của ngày trong tuần', 'calculation': 'sin(2π × day/7)',
-         'range': '[-1, 1]', 'notes': 'Cyclic encoding'},
-        {'feature_name': 'day_of_week_cos', 'data_type': 'float',
-         'description': 'Cosine của ngày trong tuần', 'calculation': 'cos(2π × day/7)',
-         'range': '[-1, 1]', 'notes': 'Cyclic encoding'},
-        {'feature_name': 'is_night_transaction', 'data_type': 'int',
-         'description': 'Giao dịch ban đêm 23h-5h', 'calculation': 'hour >= 23 or hour <= 5',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'is_salary_period', 'data_type': 'int',
-         'description': 'Kỳ lương ngày 25-5', 'calculation': 'day >= 25 or day <= 5',
-         'range': '[0, 1]', 'notes': 'Binary'},
-
-        # Velocity (5)
-        {'feature_name': 'tx_count_1h', 'data_type': 'int',
-         'description': 'Số giao dịch trong 1 giờ qua', 'calculation': 'rolling count 1H',
-         'range': '[0, 100+]', 'notes': 'Dùng shift(1)'},
-        {'feature_name': 'tx_count_24h', 'data_type': 'int',
-         'description': 'Số giao dịch trong 24 giờ qua', 'calculation': 'rolling count 24H',
-         'range': '[0, 100+]', 'notes': 'Dùng shift(1)'},
-        {'feature_name': 'minutes_since_last_tx', 'data_type': 'float',
-         'description': 'Phút từ giao dịch trước', 'calculation': 'timestamp - prev_timestamp',
-         'range': '[0, 10000]', 'notes': 'Clipped at 10000'},
-        {'feature_name': 'velocity_change', 'data_type': 'float',
-         'description': 'Thay đổi tốc độ giao dịch', 'calculation': 'tx_count_24h / avg_tx_24h_30d',
-         'range': '[0, 10]', 'notes': 'Clipped'},
-        {'feature_name': 'amount_acceleration', 'data_type': 'float',
-         'description': 'Tốc độ tăng số tiền', 'calculation': '(amount - prev) / prev',
-         'range': '[-2, 5]', 'notes': 'Clipped'},
-
-        # Recipient (6)
-        {'feature_name': 'is_new_recipient', 'data_type': 'int',
-         'description': 'Người nhận mới', 'calculation': 'recipient_tx_count == 0',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'recipient_tx_count', 'data_type': 'int',
-         'description': 'Số lần đã giao dịch với người này', 'calculation': 'cumcount theo user-recipient',
-         'range': '[0, inf]', 'notes': 'Chỉ tính giao dịch trước'},
-        {'feature_name': 'is_same_bank', 'data_type': 'int',
-         'description': 'Cùng ngân hàng', 'calculation': 'user_bank == recipient_bank',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'tx_count_to_same_recipient_24h', 'data_type': 'int',
-         'description': 'Số lần chuyển cho người này trong 24h', 'calculation': 'rolling count 24H',
-         'range': '[0, 100+]', 'notes': 'Dùng shift(1)'},
-        {'feature_name': 'recipient_account_age_days', 'data_type': 'int',
-         'description': 'Tuổi tài khoản người nhận', 'calculation': 'timestamp - recipient_created',
-         'range': '[0, 3650+]', 'notes': 'Tính tại thời điểm giao dịch'},
-        {'feature_name': 'time_since_last_tx_to_recipient', 'data_type': 'float',
-         'description': 'Ngày từ lần cuối giao dịch với người này', 'calculation': 'timestamp - prev_tx_to_recipient',
-         'range': '[0, 9999]', 'notes': 'Clipped at 9999'},
-
-        # Device/Channel (3)
-        {'feature_name': 'is_new_device', 'data_type': 'int',
-         'description': 'Device mới', 'calculation': 'device not in user history',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'channel_encoded', 'data_type': 'int',
-         'description': 'Kênh giao dịch', 'calculation': '0:Mobile, 1:Web, 2:ATM, 3:POS',
-         'range': '[0, 3]', 'notes': 'Ordinal encoding'},
-        {'feature_name': 'is_usual_location', 'data_type': 'int',
-         'description': 'Location quen thuộc', 'calculation': 'province in usual_provinces',
-         'range': '[0, 1]', 'notes': 'Binary'},
-
-        # Account (2)
-        {'feature_name': 'account_age_days', 'data_type': 'int',
-         'description': 'Tuổi tài khoản user', 'calculation': 'timestamp - account_created',
-         'range': '[0, 3650+]', 'notes': 'Tính tại thời điểm giao dịch'},
-        {'feature_name': 'income_level', 'data_type': 'int',
-         'description': 'Mức thu nhập', 'calculation': '1:thấp, 2:TB, 3:khá, 4:cao',
-         'range': '[1, 4]', 'notes': 'Ordinal'},
-
-        # Scam-specific (3)
-        {'feature_name': 'is_incremental_amount', 'data_type': 'int',
-         'description': 'Số tiền tăng dần', 'calculation': 'amount > prev_amount (cùng recipient)',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'is_during_business_hours', 'data_type': 'int',
-         'description': 'Trong giờ hành chính', 'calculation': '8h-17h, Mon-Fri',
-         'range': '[0, 1]', 'notes': 'Binary'},
-        {'feature_name': 'recipient_total_received_24h', 'data_type': 'float',
-         'description': 'Tổng tiền người nhận nhận được 24h', 'calculation': 'rolling sum 24H theo recipient',
-         'range': '[0, inf]', 'notes': 'Dùng shift(1), từ mọi nguồn'},
-    ]
-
-    return pd.DataFrame(dictionary)
-
-
-def create_metadata(df: pd.DataFrame, train_df: pd.DataFrame, val_df: pd.DataFrame,
-                   test_df: pd.DataFrame, config: dict, scaler: StandardScaler) -> dict:
-    """Tạo metadata cho dataset"""
-
-    train_date_range = [str(train_df['timestamp'].min().date()),
-                        str(train_df['timestamp'].max().date())]
-    val_date_range = [str(val_df['timestamp'].min().date()),
-                      str(val_df['timestamp'].max().date())]
-    test_date_range = [str(test_df['timestamp'].min().date()),
-                       str(test_df['timestamp'].max().date())]
-
-    metadata = {
-        "generated_at": datetime.now().isoformat(),
-        "total_transactions": len(df),
-        "total_users": config.get('n_users', 0),
-        "total_recipients": config.get('n_recipients', 0),
-        "date_range": {
-            "start": str(df['timestamp'].min().date()),
-            "end": str(df['timestamp'].max().date())
-        },
-        "fraud_rate": config.get('fraud_rate', 0),
-        "hack_rate": config.get('hack_ratio', 0.5),
-        "scam_rate": config.get('scam_ratio', 0.5),
-        "splits": {
-            "train": {
-                "count": len(train_df),
-                "fraud_count": int(train_df['is_fraud'].sum()),
-                "date_range": train_date_range
-            },
-            "validation": {
-                "count": len(val_df),
-                "fraud_count": int(val_df['is_fraud'].sum()),
-                "date_range": val_date_range
-            },
-            "test": {
-                "count": len(test_df),
-                "fraud_count": int(test_df['is_fraud'].sum()),
-                "date_range": test_date_range
-            }
-        },
-        "feature_count": len(FEATURE_COLUMNS),
-        "features": FEATURE_COLUMNS,
-        "random_seed": config.get('seed', 42),
-        "scaler_params": {
-            "mean": scaler.mean_.tolist(),
-            "std": scaler.scale_.tolist(),
-            "feature_names": FEATURE_COLUMNS
-        }
-    }
-
-    return metadata
-
-
-# ============================================================================
 # MAIN DATA GENERATION PIPELINE
 # ============================================================================
 
@@ -1248,15 +1078,12 @@ def main():
 
         normalize_data = st.checkbox("Export normalized data", value=True)
 
-        st.header("⬇️ EXPORT OPTIONS")
+        st.header("⬇️ EXPORT OPTIONS (CSV)")
 
-        export_train = st.checkbox("train_normal.parquet", value=True)
-        export_val = st.checkbox("validation.parquet", value=True)
-        export_test = st.checkbox("test.parquet", value=True)
-        export_full = st.checkbox("full_data.parquet", value=True)
-        export_scaler = st.checkbox("scaler.pkl", value=True)
-        export_dict = st.checkbox("data_dictionary.csv", value=True)
-        export_csv = st.checkbox("Also export as CSV", value=False)
+        export_train = st.checkbox("train_normal.csv", value=True)
+        export_val = st.checkbox("validation.csv", value=True)
+        export_test = st.checkbox("test.csv", value=True)
+        export_full = st.checkbox("full_data.csv", value=True)
 
     # Main panel
     col1, col2 = st.columns([2, 1])
@@ -1467,117 +1294,55 @@ def main():
 
         # Export section
         st.markdown("---")
-        st.header("⬇️ Export Data")
+        st.header("⬇️ Export Data (CSV - 30 Features Only)")
 
-        col1, col2, col3 = st.columns(3)
+        st.info("📋 File CSV chỉ chứa đúng 30 feature columns. Validation/Test có thêm cột 'is_fraud' để đánh giá model.")
 
-        # Create metadata
-        metadata = create_metadata(full_data, train_df, val_df, test_df, config, scaler)
-        data_dict = create_data_dictionary()
+        # Define export columns: 30 features only for train, 30 features + is_fraud for val/test
+        train_export_cols = FEATURE_COLUMNS.copy()
+        eval_export_cols = FEATURE_COLUMNS + ['is_fraud']
+
+        col1, col2 = st.columns(2)
 
         with col1:
             if export_train:
-                buffer = io.BytesIO()
-                train_df.to_parquet(buffer, index=False)
-                st.download_button(
-                    "📥 Download train_normal.parquet",
-                    buffer.getvalue(),
-                    "train_normal.parquet",
-                    "application/octet-stream"
-                )
-
-            if export_val:
-                buffer = io.BytesIO()
-                val_df.to_parquet(buffer, index=False)
-                st.download_button(
-                    "📥 Download validation.parquet",
-                    buffer.getvalue(),
-                    "validation.parquet",
-                    "application/octet-stream"
-                )
-
-        with col2:
-            if export_test:
-                buffer = io.BytesIO()
-                test_df.to_parquet(buffer, index=False)
-                st.download_button(
-                    "📥 Download test.parquet",
-                    buffer.getvalue(),
-                    "test.parquet",
-                    "application/octet-stream"
-                )
-
-            if export_full:
-                buffer = io.BytesIO()
-                full_data.to_parquet(buffer, index=False)
-                st.download_button(
-                    "📥 Download full_data.parquet",
-                    buffer.getvalue(),
-                    "full_data.parquet",
-                    "application/octet-stream"
-                )
-
-        with col3:
-            if export_scaler:
-                buffer = io.BytesIO()
-                joblib.dump(scaler, buffer)
-                st.download_button(
-                    "📥 Download scaler.pkl",
-                    buffer.getvalue(),
-                    "scaler.pkl",
-                    "application/octet-stream"
-                )
-
-            if export_dict:
                 csv_buffer = io.StringIO()
-                data_dict.to_csv(csv_buffer, index=False)
+                train_df[train_export_cols].to_csv(csv_buffer, index=False)
                 st.download_button(
-                    "📥 Download data_dictionary.csv",
-                    csv_buffer.getvalue(),
-                    "data_dictionary.csv",
-                    "text/csv"
-                )
-
-        # Metadata download
-        st.download_button(
-            "📥 Download metadata.json",
-            json.dumps(metadata, indent=2, ensure_ascii=False),
-            "metadata.json",
-            "application/json"
-        )
-
-        # CSV exports
-        if export_csv:
-            st.markdown("**CSV Exports:**")
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                csv_buffer = io.StringIO()
-                train_df.to_csv(csv_buffer, index=False)
-                st.download_button(
-                    "📥 train_normal.csv",
+                    "📥 Download train_normal.csv",
                     csv_buffer.getvalue(),
                     "train_normal.csv",
                     "text/csv"
                 )
 
-            with col2:
+            if export_val:
                 csv_buffer = io.StringIO()
-                val_df.to_csv(csv_buffer, index=False)
+                val_df[eval_export_cols].to_csv(csv_buffer, index=False)
                 st.download_button(
-                    "📥 validation.csv",
+                    "📥 Download validation.csv",
                     csv_buffer.getvalue(),
                     "validation.csv",
                     "text/csv"
                 )
 
-            with col3:
+        with col2:
+            if export_test:
                 csv_buffer = io.StringIO()
-                test_df.to_csv(csv_buffer, index=False)
+                test_df[eval_export_cols].to_csv(csv_buffer, index=False)
                 st.download_button(
-                    "📥 test.csv",
+                    "📥 Download test.csv",
                     csv_buffer.getvalue(),
                     "test.csv",
+                    "text/csv"
+                )
+
+            if export_full:
+                csv_buffer = io.StringIO()
+                full_data[eval_export_cols].to_csv(csv_buffer, index=False)
+                st.download_button(
+                    "📥 Download full_data.csv",
+                    csv_buffer.getvalue(),
+                    "full_data.csv",
                     "text/csv"
                 )
 
@@ -1598,12 +1363,13 @@ def main():
         - **Train set**: CHỈ chứa giao dịch normal
         - **Validation/Test**: Chứa cả normal + fraud
 
-        ### 4. Export
-        - **Parquet**: Khuyến nghị cho large datasets
-        - **Scaler**: Cần thiết để transform data khi inference
+        ### 4. Export (CSV Only)
+        - **CSV format**: File xuất ra chỉ chứa đúng 30 feature columns
+        - **Train**: Chỉ có 30 features (không có is_fraud vì toàn bộ là normal)
+        - **Validation/Test**: 30 features + is_fraud (để đánh giá model)
 
         ### 5. Features (30 features)
-        Xem chi tiết trong data_dictionary.csv
+        30 features được tính toán tự động từ dữ liệu giao dịch
 
         ### 6. Checklist tránh Data Leakage
         - ✅ Split theo thời gian, không random
