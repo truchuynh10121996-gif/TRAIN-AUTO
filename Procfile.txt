@@ -1,1 +1,1 @@
-web: sh setup.sh && streamlit run python.py
+web: sh setup.sh && streamlit run streamlit_autoencoder_data_generator.py
