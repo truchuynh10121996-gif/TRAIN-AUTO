@@ -1394,17 +1394,29 @@ def main():
             with col1:
                 st.markdown("**Train Set (Normal)**")
                 hist_data = train_df[feature_to_plot].dropna()
-                st.bar_chart(pd.cut(hist_data, bins=30).value_counts().sort_index())
+                hist_counts = pd.cut(hist_data, bins=30).value_counts().sort_index()
+                # Convert Interval index to string for Altair compatibility
+                hist_counts.index = hist_counts.index.astype(str)
+                st.bar_chart(hist_counts)
 
             with col2:
                 st.markdown("**Test Set (Normal vs Fraud)**")
                 normal_data = test_df[test_df['is_fraud'] == 0][feature_to_plot].dropna()
                 fraud_data = test_df[test_df['is_fraud'] == 1][feature_to_plot].dropna()
 
+                # Use common bins for fair comparison
+                all_test_data = test_df[feature_to_plot].dropna()
+                bins = pd.cut(all_test_data, bins=30, retbins=True)[1]
+
+                normal_counts = pd.cut(normal_data, bins=bins).value_counts().sort_index()
+                fraud_counts = pd.cut(fraud_data, bins=bins).value_counts().sort_index()
+
                 chart_data = pd.DataFrame({
-                    'Normal': pd.cut(normal_data, bins=30).value_counts().sort_index().values,
-                    'Fraud': pd.cut(fraud_data, bins=30).value_counts().sort_index().values
+                    'Normal': normal_counts.values,
+                    'Fraud': fraud_counts.values
                 })
+                # Convert index to string for Altair compatibility
+                chart_data.index = normal_counts.index.astype(str)
                 st.bar_chart(chart_data)
 
             # Fraud type distribution
